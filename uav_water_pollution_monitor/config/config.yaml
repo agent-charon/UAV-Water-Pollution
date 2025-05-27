@@ -1,0 +1,80 @@
+# General Paths
+data_dir: "data"
+raw_data_dir: "data/raw"
+processed_data_dir: "data/processed"
+annotations_dir: "data/annotations/yolo_format"
+models_dir: "models/saved_models"
+results_dir: "results" # For evaluation outputs, plots etc.
+
+# Dataset Specifics
+image_height: 720
+image_width: 1280
+classes: ["algae", "trash", "plastic", "chemical_spill", "mixed_pollutants"] # As per paper + common ones
+num_classes: 5 # Update if classes list changes
+
+# YOLOv5 Lightweight Model
+yolov5_config_path: "models/yolov5_lightweight/model.yaml" # Custom model definition
+yolov5_weights_path: "models/saved_models/yolov5_lightweight.pt" # Path to trained weights
+yolov5_dataset_yaml: "config/dataset_yolo.yaml" # YOLO training dataset config
+
+# ViT Model
+vit_model_name: "vit_base_patch16_224" # Example, from 'timm' library
+vit_checkpoint_path: "models/saved_models/vit_extractor.pth" # if fine-tuning ViT separately
+vit_feature_dim: 768 # For vit_base_patch16_224
+
+# Sensor Data
+sensor_data_file: "data/processed/sensor_features.csv" # Processed sensor data
+sensor_features: ["ph", "tds"] # Features from sensor data
+
+# TabNet-XGBoost Ensemble
+tabnet_params:
+  n_d: 8
+  n_a: 8
+  n_steps: 3
+  gamma: 1.3
+  n_independent: 2
+  n_shared: 2
+  lambda_sparse: 0.001
+  optimizer_fn: "torch.optim.Adam"
+  optimizer_params:
+    lr: 0.02
+  scheduler_params: {"step_size":10, "gamma":0.9}
+  scheduler_fn: "torch.optim.lr_scheduler.StepLR"
+  mask_type: "sparsemax" # or "entmax"
+  verbose: 10
+  # Add other TabNet params as needed from the paper or defaults
+
+xgb_params:
+  objective: 'multi:softprob' # For multi-class classification
+  eval_metric: 'mlogloss'
+  eta: 0.1
+  max_depth: 6
+  subsample: 0.8
+  colsample_bytree: 0.8
+  # Add other XGBoost params as needed
+
+ensemble_model_path: "models/saved_models/ensemble_tabnet_xgb.pkl" # For saving trained ensemble
+
+# Training Parameters
+batch_size: 16
+epochs_yolo: 50 # As per paper Table 2 for "proposed model"
+epochs_ensemble: 50
+learning_rate_yolo_sgd_initial: 0.01
+learning_rate_yolo_adam_initial: 0.001
+learning_rate_yolo_final: 0.001
+momentum_yolo_sgd: 0.939 # Paper uses 0.939, common default is 0.9
+weight_decay_yolo: 0.0005
+
+# MQTT (for data collection scripts)
+mqtt_broker: "localhost" # or your R-Pi's IP
+mqtt_port: 1883
+rpi_sensor_topic_base: "sensors/rpi_gateway/" # e.g., sensors/rpi_gateway/ph, sensors/rpi_gateway/tds
+nodemcu_topic_base: "sensors/nodemcu/" # e.g., sensors/nodemcu/node1/ph
+
+# Inference
+inference_confidence_threshold: 0.5
+iou_threshold: 0.45 # For NMS
+
+# Real-time Challenges (Sec 4.3)
+frame_processing_interval: 1 # Process every Nth frame in real-time mode for efficiency
+store_pollutant_frames_only: True # If true, only frames with detections are saved

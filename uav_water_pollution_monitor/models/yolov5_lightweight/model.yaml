@@ -1,0 +1,164 @@
+# Parameters
+nc: 5  # number of classes - MUST MATCH YOUR dataset_yolo.yaml and config.yaml
+depth_multiple: 0.33  # model depth multiple (same as yolov5s)
+width_multiple: 0.50  # layer channel multiple (same as yolov5s)
+anchors: # Using yolov5 default P3-P5 anchors initially, new head might need custom anchors
+  - [10,13, 16,30, 33,23]  # P3/8
+  - [30,61, 62,45, 59,119]  # P4/16
+  - [116,90, 156,198, 373,326]  # P5/32
+  # Anchors for P6 (160x160 head, stride 4) might need to be smaller.
+  # For a 160x160 output, the stride relative to a 640 input is 640/160 = 4.
+  # This means it's an earlier layer. Let's call it P2 for consistency with strides.
+  # The paper adds a 160x160 detection layer. If input is 640, stride is 4.
+  # If input is 1280 (as per paper's dataset), stride is 1280/160 = 8. Let's assume P3 for now
+  # The diagram shows 160x160, 80x80, 40x40, 20x20 outputs.
+  # Stride 8 (P3), 16 (P4), 32 (P5), 64 (P6) for a 1280 input.
+  # The paper says 160x160, 80x80, 40x40, 20x20. Let's call them P_160, P_80, P_40, P_20
+  # For input 1280x720, if outputs are 160, 80, 40, 20 on the longer dim, strides are:
+  # 1280/X = S -> X=160 -> S=8 ; X=80 -> S=16; X=40 -> S=32; X=20 -> S=64.
+  # These are standard P3, P4, P5, P6 strides.
+  # So, we need 4 sets of anchors. Adding a very small anchor set for the 160x160 head.
+  - [5,6, 8,14, 15,11] # P_160 (new, stride 8) - Example, needs tuning
+  - [10,13, 16,30, 33,23]  # P_80 (stride 16) - Original P3
+  - [30,61, 62,45, 59,119]  # P_40 (stride 32) - Original P4
+  - [116,90, 156,198, 373,326]  # P_20 (stride 64) - Original P5
+
+# Backbone
+# Modifications from paper:
+# Focus: remove 1x1 conv (part of 'args' in Focus module if using old yolo structure)
+#        remove 3x3 conv after Focus (this is usually the first CBS block)
+# BottleneckCSP: remove 1x1 conv in shortcut (n=11 times) -> This means using a modified BottleneckCSP
+# For simplicity with Ultralytics new structure, we'll represent modifications by adjusting layers.
+# The new YOLOv5 models define `Focus` implicitly with `Conv` with `k=6, s=2, p=2` if `gd=0.33, gw=0.25`.
+# Let's try to follow the spirit of Fig 5.
+
+backbone:
+  # [from, number, module, args]
+  # Stage 0 - Focus replacement (as per new YOLOv5 structure, Focus is Conv with k=6,s=2,p=2)
+  # The paper says: "Focus module, the 1x1 conv layer was removed".
+  # And "3x3 conv layer with 128 kernels after focus was eliminated".
+  # Original Focus: [-,1, Focus, [64, 3]] -> output c1=64
+  # Original Next Conv: [-,1, Conv, [128,3,2]] -> output c2=128
+  # If Focus 1x1 is removed, it changes how input channels are handled by Focus.
+  # If the 3x3 Conv 128 is removed, then the next layer connects to Focus's output.
+  # Let's assume the "Focus" module itself is kept structurally but its internal 1x1 is what's referred to.
+  # Modern YOLOv5's `nn.modules.Conv` (CBS) has `Conv2d, BN, SiLU`.
+  # The `Focus` module in older YOLOv5 was: `Conv(c1, c2, k, s, p, g, act), ...`
+  # For simplicity, let's use standard blocks and adjust connections/channels if a layer is "removed".
+
+  # Based on Fig 5: Input -> CBS (Focus replacement) -> BottleneckCSP -> CBS -> BottleneckCSP -> ... -> SPP
+  # The "Focus" in Fig 5 outputs to a BottleneckCSP.
+  # In yolov5s.yaml, Focus outputs 64 ch. Then Conv outputs 128. Then C3 outputs 128.
+  # If 3x3 Conv after Focus is removed, then Focus output (64ch) would go to the first C3/BottleneckCSP.
+
+  [[-1, 1, Conv, [64, 6, 2, 2]], # 0-P1/2 Focus replacement: input 3 -> 64 channels, H/2, W/2. (stride 2)
+                                  # This is like the original Focus output channels.
+                                  # The paper's "1x1 in Focus removed" might refer to how Focus was implemented
+                                  # (slicing + 1x1 conv). We are using the new Conv(k=6) as Focus.
+                                  # The "3x3 conv after Focus removed" means the usual Conv(128,3,2) is gone.
+  ]
+  # Stage 1
+  [[-1, 1, Conv, [128, 3, 2]], # 1-P2/4 (stride 4 overall) output: 128 ch. This is the first downsampling after "Focus"
+                                 # This layer might be what the paper eliminated as "3x3 conv after Focus".
+                                 # If so, then layer 0's output (64ch) would directly feed into layer 2 (BottleneckCSP).
+                                 # Let's try eliminating this one as per "3x3 conv layer with 128 kernels after Focus module was eliminated"
+                                 # Then layer 2 connects to layer 0.
+
+  # Corrected based on "3x3 conv layer with 128 kernels after Focus module was eliminated":
+  # The first BottleneckCSP will take input from layer 0 (Focus output).
+  # Original yolov5s: Focus -> Conv(128,3,2) -> C3(128)
+  # Lightweight: Focus -> C3(Focus_out_channels) or C3(modified_channels)
+  # Let's assume the first C3 (BottleneckCSP) now processes 64 channels from layer 0.
+  # The paper's BottleneckCSP is also modified ("redundant parameters ... removed by eliminating 1x1 conv layer")
+  # This means we need a new module 'LightBottleneckCSP' or 'C3Light'.
+  # For simplicity, we'll use C3 but acknowledge it's meant to be lighter.
+  # Number of bottlenecks in C3 is depth_multiple * n_bottlenecks_in_yaml.
+  # Yolov5s C3(128) has n=1*3=3 bottlenecks.
+
+  [[-1, 1, C3, [64, 1]], # 1 - BottleneckCSP, input 64 from layer 0, output 64. (depth_multiple controls actual repeats)
+                         # The '1' for num_bottlenecks is (0.33 * 3) rounded.
+                         # Paper: "in BottleneckCSP, shortcut 1x1 removed". This change is internal to C3.
+                         # The number of output channels for this first C3 is not explicitly stated to change from the input 64.
+                         # Fig 5 shows: Focus -> BottleneckCSP -> CBS (downsample)
+  ]
+  # Stage 2
+  [[-1, 1, Conv, [128, 3, 2]], # 2-P3/8 (stride 8 overall), input 64, output 128. This is the downsampling Conv.
+  [-1, 3, C3, [128, 3]], # 3 - BottleneckCSP, input 128, output 128. (0.33 * 9) rounded to 3. # save P3 for head
+  ]
+  # Stage 3
+  [[-1, 1, Conv, [256, 3, 2]], # 4-P4/16 (stride 16 overall), input 128, output 256
+  [-1, 3, C3, [256, 3]], # 5 - BottleneckCSP, input 256, output 256 # save P4 for head
+  ]
+  # Stage 4
+  [[-1, 1, Conv, [512, 3, 2]], # 6-P5/32 (stride 32 overall), input 256, output 512
+  [-1, 1, SPPF, [512, 5]], # 7 - SPPF, input 512, output 512 # save P5 for head. yolov5s uses C3 here, newer versions use SPPF
+  ]
+  # Stage 5 (New head is 160x160, this implies an earlier feature map is used)
+  # The diagram implies P3 (idx 3, stride 8, 128ch), P4 (idx 5, stride 16, 256ch), P5 (idx 7, stride 32, 512ch)
+  # are used. A new 160x160 output would come from something with stride ~4-8.
+  # If input is 1280, stride 8 gives 160. Layer 2 (Conv) outputs at stride 8.
+  # Or P3 (layer 3) is at stride 8.
+  # The outputs in Fig 5 are: 160x160, 80x80, 40x40, 20x20.
+  # For 1280 input: 1280/160=S8, 1280/80=S16, 1280/40=S32, 1280/20=S64.
+  # Strides S8, S16, S32 are P3, P4, P5. The 20x20 is a new P6 (stride 64).
+  # So we need one more downsampling for the 20x20 output.
+  [[-1, 1, Conv, [1024, 3, 2]], # 8-P6/64 (stride 64 overall), input 512, output 1024
+  [-1, 1, C3, [1024, 1]], # 9 - BottleneckCSP, input 1024, output 1024 # save P6 for head
+  ]
+
+# Head - PANet structure (Fig 5 shows PANet-like connections)
+# Outputs required: 160x160 (from P3), 80x80 (from P4), 40x40 (from P5), 20x20 (from P6)
+# This means we take features from backbone layers at indices:
+# P3: layer 3 (128 ch, stride 8) -> for 160x160 detection
+# P4: layer 5 (256 ch, stride 16) -> for 80x80 detection
+# P5: layer 7 (512 ch, stride 32) -> for 40x40 detection
+# P6: layer 9 (1024 ch, stride 64) -> for 20x20 detection
+
+head:
+  [
+  # Top-down path (FPN)
+  [-1, 1, Conv, [512, 1, 1]],           # 10 input P6 (layer 9, 1024ch), output 512ch
+  [-1, 1, nn.Upsample, [None, 2, 'nearest']], # 11 upsample
+  [[-1, 7], 1, Concat, [1]],          # 12 concat P5 (layer 7, 512ch) with upsampled P6. Cat_out = 512+512=1024
+  [-1, 1, C3, [512, 1, False]],       # 13 C3 on P5_cat, output 512ch (becomes M5 for detection)
+
+  [-1, 1, Conv, [256, 1, 1]],           # 14 input M5, output 256ch
+  [-1, 1, nn.Upsample, [None, 2, 'nearest']], # 15 upsample
+  [[-1, 5], 1, Concat, [1]],          # 16 concat P4 (layer 5, 256ch) with upsampled M5. Cat_out = 256+256=512
+  [-1, 1, C3, [256, 1, False]],       # 17 C3 on P4_cat, output 256ch (becomes M4 for detection)
+
+  [-1, 1, Conv, [128, 1, 1]],           # 18 input M4, output 128ch
+  [-1, 1, nn.Upsample, [None, 2, 'nearest']], # 19 upsample
+  [[-1, 3], 1, Concat, [1]],          # 20 concat P3 (layer 3, 128ch) with upsampled M4. Cat_out = 128+128=256
+  [-1, 1, C3, [128, 1, False]],       # 21 C3 on P3_cat, output 128ch (becomes M3 for 160x160 detection)
+
+  # Bottom-up path (PAN)
+  [-1, 1, Conv, [128, 3, 2]],           # 22 input M3 (layer 21), output 128ch, downsample. Connects to M4 path
+  [[-1, 17], 1, Concat, [1]],         # 23 concat with M4 (layer 17, 256ch). Cat_out = 128+256=384
+  [-1, 1, C3, [256, 1, False]],       # 24 C3, output 256ch (N4 for 80x80 detection)
+
+  [-1, 1, Conv, [256, 3, 2]],           # 25 input N4 (layer 24), output 256ch, downsample. Connects to M5 path
+  [[-1, 13], 1, Concat, [1]],         # 26 concat with M5 (layer 13, 512ch). Cat_out = 256+512=768
+  [-1, 1, C3, [512, 1, False]],       # 27 C3, output 512ch (N5 for 40x40 detection)
+
+  [-1, 1, Conv, [512, 3, 2]],           # 28 input N5 (layer 27), output 512ch, downsample. Connects to P6 path (from backbone for upsample)
+  [[-1, 10], 1, Concat, [1]],        # 29 concat with P6_conv (layer 10, 512ch from P6 branch). Cat_out = 512+512=1024
+  [-1, 1, C3, [1024, 1, False]],      # 30 C3, output 1024ch (N6 for 20x20 detection)
+
+  # Detection Layers (Detect module)
+  # The Detect module takes features from M3, N4, N5, N6
+  # M3: layer 21 (128 ch) - for 160x160
+  # N4: layer 24 (256 ch) - for 80x80
+  # N5: layer 27 (512 ch) - for 40x40
+  # N6: layer 30 (1024 ch) - for 20x20
+  [[21, 24, 27, 30], 1, Detect, [nc, anchors]],  # Detect(P_160, P_80, P_40, P_20)
+  ]
+
+# Note on BottleneckCSP modifications:
+# The paper says "redundant parameters in the shortcut path were removed by eliminating a 1x1 convolutional layer".
+# This implies the C3 module itself should be modified. If using stock C3 from ultralytics, this
+# specific optimization isn't directly applied by this YAML alone.
+# You would need to define a 'C3Light' module in your python code (models.py in yolo repo)
+# and use `C3Light` here instead of `C3` if you want to implement that exact layer removal.
+# For this YAML, we use `C3` and assume `depth_multiple` handles some "lightening".
+# The `False` in C3 for the head means no shortcut (as per yolov5 head C3s).

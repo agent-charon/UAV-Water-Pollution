@@ -1,0 +1,18 @@
+numpy
+opencv-python
+torch
+torchvision
+torchaudio
+pandas
+scikit-learn
+matplotlib
+pyyaml
+tqdm
+ultralytics # For YOLOv5 utilities, or you can integrate parts of their repo
+timm # For ViT models
+pytorch-tabnet
+xgboost
+paho-mqtt # For MQTT communication
+# Add any other specific versions if needed, e.g., torch==1.13.1+cu117
+# Pillow
+# Seaborn
